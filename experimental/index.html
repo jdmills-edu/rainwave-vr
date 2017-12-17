@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang=en>
+	<head>
+		<meta charset=utf-8>
+		<title>AltspaceVR Rainwave Jukebox</title>
+		<script src="http://sdk.altvr.com/libs/three.js/r73/build/three.js"></script>
+		<script src="http://tweenjs.github.io/tween.js/build/tween.min.js"></script>
+		<script src="http://sdk.altvr.com/libs/altspace.js/0.4.0/altspace.min.js"></script>
+		<script src="http://sdk.altvr.com/libs/three.js/r73/examples/js/geometries/TextGeometry.js"></script>
+		<script src="http://sdk.altvr.com/libs/three.js/r73/examples/js/utils/FontUtils.js"></script>
+		<script src="http://sdk.altvr.com/libs/three.js/r73/examples/fonts/helvetiker_regular.typeface.js"></script>
+		<script src="js/RainwavePlayer.js"></script>
+		
+		<!--global CSS-->
+		<style>
+		body {
+			font-family: Helvetica;
+		}
+		h2 {
+			text-align:center;
+			color:#eee;
+			margin-bottom:5px;
+			padding:0px;
+		}
+		#streamContainer {
+			text-align:center;
+			position:absolute;
+			top:50%;
+		}
+		</style>
+		
+		<script>
+		if (!window.altspace) document.write('<h3>To view this example, please open this page in <a href="http://altvr.com"> AltspaceVR </a></h3>');
+		
+		//Setup - Create the three.js scene and specify a renderer
+		var scene = new THREE.Scene();
+		var renderer = altspace.getThreeJSRenderer({version:'0.2.0'});
+		
+		//SDK - Important SDK functions go here
+		var syncInstance = altspace.utilities.sync.getInstance();
+		var syncPlaying = syncInstance.child('playing');
+		var syncPartyMode = syncInstance.child('false');
+		
+		</script>
+		
+		<!--
+		DEFINE THREE.JS MESHES
+		Mesh objects:
+			carpet
+			rainwaveBanner - "rainwave radio" hovering above the rest of the scene
+			holoPlatform - grey cylinder below album art
+			holoScroller - cylinder, responds to bass
+			albumArt
+			speakerLeft     
+			cone1Left - bass and mid cone on the bottom
+			cone2Left - treble cone on the top
+			cone1Right
+			cone2Right
+			controlPanel - contains the buttons
+			partyPedastal - pedastal for the red party button
+			partyButton
+			stopCylinder
+			stopButton - stops playback
+			bars[bar0-9]
+			buttons[allButton, gameButton, chipButton, ocrButton, coversButton]
+			instructionsText - "pick a station"
+			tiles[1,0 - 4,3] - dance floor tiles
+		Functions:
+			buttonBuilder - creates the button meshes based on the properties contained in the buttons object
+			resetButtons - resets the buttons to their default state
+		-->
+		
+		<script src="js/meshes.js"></script>
+		
+		<!--TRACKING SKELETON-->
+		<script>
+		var leftHand = {hand:"", index:"", middle:"", pinky:""}
+		var rightHand = {hand:"", index:""}
+		var bothHandsExist = false;
+
+		function initalizeHands(){
+			if (bothHandsExist == false){
+				altspace.getThreeJSTrackingSkeleton().then(function(callback)
+				{
+					var skeleton = callback;
+					if ((skeleton.getJoint('Hand', 'Left')) && (skeleton.getJoint('Hand', 'Right'))){
+						bothHandsExist = true;
+						clearInterval(handChecker);
+						scene.add(skeleton);
+						leftHand.hand = skeleton.getJoint('Hand', 'Left');
+						leftHand.pinky = skeleton.getJoint('Pinky',  'Left',  3);
+						leftHand.middle = skeleton.getJoint('Middle', 'Left',  3);
+						leftHand.index = skeleton.getJoint('Index', 	'Left',  3);
+						rightHand.hand = skeleton.getJoint('Hand', 'Right');
+						rightHand.index = skeleton.getJoint('Index', 	'Right', 3);
+						
+						leftHand.hand.add(leapMenuToggle);
+						leapMenuToggle.visible = true;
+						leftHand.pinky.add(leapElection);
+						leapElection.visible = true;
+						leftHand.middle.add(leapVolumeToggle);
+						leapVolumeToggle.visible = true;
+						leftHand.index.add(leapLaserButton);
+						leapLaserButton.visible = true;
+						
+						leftHand.index.add(leftLaser);
+						rightHand.index.add(rightLaser);
+					}
+				});
+			}
+		}
+		var handChecker = setInterval(initalizeHands, 1000);
+		</script>
+		
+		<!--
+		DEFINE EVENT LISTENERS
+		Functions:
+			addButtonListeners - adds "now playing" event listeners to each station button
+			enablePartyMode
+			disablePartyMode
+			checkPartyMode
+			stopPlayback - stops playback and resets many objects and variables to their default states
+		Important Variables:
+			pressPlay - should the radio be playing right now?
+			partyMode - is party mode enabled?
+		-->
+		
+		<script>
+		//Streams - Define individual stream objects and make them children of the "streams" object
+		var stream_game = {sid:"1", url:"http://gamestream.rainwave.cc:8000/game.ogg", button:gameButton.mesh}
+		var stream_ocr = {sid:"2", url:"http://ocrstream.rainwave.cc:8000/ocremix.ogg", button:ocrButton.mesh}
+		var stream_covers = {sid:"3", url:"http://coversstream.rainwave.cc:8000/covers.ogg", button:coversButton.mesh}
+		var stream_chip = {sid:"4", url:"http://chipstream.rainwave.cc:8000/chiptune.ogg", button:chipButton.mesh}
+		var stream_all = {sid:"5", url:"http://allstream.rainwave.cc:8000/all.ogg", button:allButton.mesh}
+		
+		var streams = [stream_game, stream_ocr, stream_covers, stream_chip, stream_all];
+		</script>
+		
+		<script src="js/eventListeners.js"></script>
+			
+		<!--
+		CALL RAINWAVE API
+		Functions:
+			getRWInfo - JSON call requesting lots of info about the selected radio station (song, artist, album, artwork, etc)
+			getTimeDiff - gets the time difference between the local browser and the rainwave radio server
+		Important Variables:
+			globalStationSID - unique station identifier
+			jsonResponse - stores the json response in an accessible format
+			npTitle
+			npArtist
+			npAlbum
+			npArt
+			npLength
+			npEnd
+			serverTime - rainwave radio server time
+			countdownTimer - counts down until the end of the current song
+			timeDiff - difference between rainwave time and local browser time
+		-->
+		
+		<script src="js/RainwaveAPI.js"></script>
+		
+		<!--
+		NOW PLAYING
+		Functions:
+			updateNowPlaying - replaces "now playing" text, updates the countdown timer, re-fires the getRWInfo function when the timer is up.
+			updateAlbumArt - replaces the albumArt material with a new texture containing album art acquired from rainwave
+			resizeArt - re-scales the albumArt mesh to an aspect-appropriate size 320 units wide or 400 units high
+		Important Variables:
+			timeLeft - (end of the current song in epoch ms - server time in epoch ms) * 1000
+			updateAgain - contains a timeout function that re-fires getRWInfo after timeLeft expires, adds an 8 second buffer
+		-->
+		<script src="js/nowPlaying.js"></script>
+		
+	</head>
+	
+	<!--actual body html!-->
+	<body>	
+
+		<h2 id="title"></h2>
+		<h2 id="artist"></h2>
+		<h2 id="album"></h2>
+		
+		<!--account for smaller enclosures on gearVR-->
+		<script>
+		if(!(navigator.userAgent.match(/mobile/))){
+			document.getElementById("title").style.marginTop = "25%";
+			}
+		else{
+			document.getElementById("title").style.marginTop = "0px";
+			}
+		</script>
+		
+		<!--put the stream and SFX audio tags in the middle of the enclosure-->
+		<div id="streamContainer">
+		<audio src="" id="stream"></audio>
+		</div>
+		
+		<!--/body html-->
+		
+		<!--onload scripts - these require HTML body elements to exist before they can run-->
+		<script>
+		var stream = document.getElementById("stream");
+		var sfx = document.getElementById("sfx");
+		</script>
+		
+		<!--
+		SET UP RAINWAVE PLAYER
+		-->
+		<script>
+		RainwavePlayer.audioElDest = document.getElementById("streamContainer");
+		</script>
+		
+		<!--
+		STREAM MAINTENANCE
+		Functions:
+			secsToTime - converts base 10 seconds to mm:ss format
+			checkStream - if the stream is playing, updates the title header to include time left. Also checks for stream errors and restarts playback.
+		Important Variables:
+			streamErrors - if this reaches 60 (incremented 1 per second), stop trying to play the stream and change the control panel and holoScroller materials to red.
+		-->
+		
+		<script src="js/streamMaintenance.js"></script>
+		
+		<!--
+		STREAM SAMPLER FUNCTION
+		Functions:
+			sampleAudioStream - Identifies the audio context (in this case the audio element with id "stream", and creates 128 "buckets" representing a part of the frequency spectrum during the 20 ms sampling period. Each bucket contains a volume value from 0 - 255.
+		Important Variables:
+			Read the documentation in streamMaintenance.js. 
+		-->
+		
+		<!--<script src="js/streamSample.js"></script>--?
+		//COMMENTED OUT DUE TO LIMITATIONS OF OCULUS RUNTIME 1.3
+	
+		<!--That's enough js includes for now. Rendering and animation stuff below-->
+		
+		<script>
+		
+		var audioSource = new audioSource('stream');
+		var canvasElement = document.getElementById('canvas');
+		//var context = canvasElement.getContext("2d");
+		
+		//Render
+		
+		var bumping = false; //is the subwoofer volume currently over the prescribes threshold
+		var sub = 0; //current subwoofer volume
+		var lastSub = 0; //last subwoofer volume
+		var subThreshold = 200; // how sensitive should the color strobe be?
+		
+		//don't attempt to change the floor color until bpmCounter reaches bpmWait
+		//at 60 fps, a bpmWait value of 20 performs a maximum of 3 updates per second
+		//this would support music up to 180 bpm
+		
+		var tileSwitch = 'even';
+		var bpmWait = 20; 
+		var bpmCounter = 0;
+		var floorColor;
+		var headBangCounter = 0; //just for fun, displayed in the console log
+		
+		function animate() {
+			requestAnimationFrame(animate);
+			renderer.render(scene);
+			
+			albumArt.rotation.y += 0.005;
+			holoScroller.rotation.y -= 0.005;
+			
+			//CONE VARS
+			var bass = 1;
+			var mid = 1;
+			var  treble = 1;
+			
+			//RESET GEOMETRY
+			if (pressPlay == true){
+				holoScroller.scale.y = 20;
+			}
+			cone1Left.scale.x = 1;
+			cone1Left.scale.y = 10;
+			cone1Left.scale.z = 1;
+			cone2Left.scale.x = 1;
+			cone2Left.scale.y = 10;
+			cone2Left.scale.z = 1;
+			cone1Right.scale.x = 1;
+			cone1Right.scale.y = 10;
+			cone1Right.scale.z = 1;
+			cone2Right.scale.x = 1;
+			cone2Right.scale.y = 10;
+			cone2Right.scale.z = 1;
+			
+			if (pressPlay == true){
+				
+				if(bpmCounter < bpmWait){
+					bpmCounter++;
+				}
+				
+				//define subwoofer frequencies
+				sub = audioSource.streamData[0];
+
+				//define bass frequencies
+				for(bin = 0; bin < 3; bin ++) {
+					bass += audioSource.streamData[bin] * .007;
+				}
+				
+				//define mid frequencies
+				for(bin = 3; bin < 40; bin ++) {
+					mid += audioSource.streamData[bin] * .0004;
+				}
+				
+				//define treble frequencies
+				for(bin = 40; bin < audioSource.streamData.length; bin ++) {
+					treble += audioSource.streamData[bin] * .0004;
+				}
+						
+				//scroller responds to bass volume
+				holoScroller.scale.y = holoScroller.scale.y * bass;
+				
+				//left speaker cone behavior
+				cone1Left.scale.x = 1 + cone1Left.scale.x * (mid / 20);
+				cone1Left.scale.y = cone1Left.scale.y * mid;
+				cone1Left.scale.z = 1 + cone1Left.scale.z * (mid / 20);
+				cone2Left.scale.x = 1 + cone2Left.scale.x * (treble / 20);
+				cone2Left.scale.y = cone2Left.scale.y * treble;
+				cone2Left.scale.z = 1 + cone2Left.scale.z * (treble / 20);
+				
+				//right speaker cone behavior
+				cone1Right.scale.x = 1 + cone1Right.scale.x * (mid / 20);
+				cone1Right.scale.y = cone1Right.scale.y * mid;
+				cone1Right.scale.z = 1 + cone1Right.scale.z * (mid / 20) ;
+				cone2Right.scale.x = 1 + cone2Right.scale.x * (treble / 20);
+				cone2Right.scale.y = cone2Right.scale.y * treble;
+				cone2Right.scale.z = 1 + cone2Right.scale.z * (treble / 20);
+				
+				//reset the height of the visualizer bars each animation cycle
+				var barHeight = [0,0,0,0,0,0,0,0,0,0];
+				
+				//break the stream data into 10 buckets instead of just sub, bass, mid, and treble
+				//note the attempt to normalize the volume values as we move from low to high frequencies
+				for(bin = 0; bin < 10; bin ++) {
+					barHeight[0] += audioSource.streamData[bin] * .7;
+				}
+				for(bin = 10; bin < 20; bin ++) {
+					barHeight[1] += audioSource.streamData[bin] * .8;
+				}
+				for(bin = 20; bin < 30; bin ++) {
+					barHeight[2] += audioSource.streamData[bin] * .9;
+				}
+				for(bin = 30; bin < 40; bin ++) {
+					barHeight[3] += audioSource.streamData[bin] * 1;
+				}
+				for(bin = 40; bin < 50; bin ++) {
+					barHeight[4] += audioSource.streamData[bin] * 1.1;
+				}
+				for(bin = 50; bin < 60; bin ++) {
+					barHeight[5] += audioSource.streamData[bin] * 1.2;
+				}
+				for(bin = 60; bin < 70; bin ++) {
+					barHeight[6] += audioSource.streamData[bin] * 1.3;
+				}
+				for(bin = 70; bin < 80; bin ++) {
+					barHeight[7] += audioSource.streamData[bin] * 1.4;
+				}
+				for(bin = 80; bin < 90; bin ++) {
+					barHeight[8] += audioSource.streamData[bin] * 1.5;
+				}
+				for(bin = 90; bin <= 100; bin ++) {
+					barHeight[9] += audioSource.streamData[bin] * 1.6;
+				}
+				
+				//before we perform our y scale transform, reset the bars to their original y scale of 100
+				for(i=0;i<bars.length;i++){
+					bars[i].scale.y = 100;
+				}
+				
+				//loop through the bars and perform the appropriate y scale transform
+				for(i=0;i<bars.length;i++){
+					var thisBar = bars[i];
+					thisBar.position.y = (thisBar.scale.y / 2) - 512;
+					thisBar.scale.y = thisBar.scale.y * (1 + (barHeight[i] * .004));
+				}
+				
+				//party mode logic
+				if((partyMode == 1 || partyMode == 2 || partyMode == 3) && bpmCounter == bpmWait){
+				
+					//if subwoofer falls below the threshold, reset the bumping boolean (lol)
+					if(sub <= subThreshold){
+						bumping = false;
+						}
+					
+					//as long as we aren't already bumping and the sub volume is high enough, do this stuff
+					if((sub > subThreshold && bumping == false) || ((sub > subThreshold) && (bumping == true) && sub > (lastSub * 1.15))){
+						//make a random bright and saturated color
+						var pleaseColorString = Please.make_color({value:1,saturation:1});
+						//convert the r,g,b array to a string
+						floorColor = pleaseColorString.join(",");
+						//apply the new floor color
+						if(tileSwitch == 'even'){
+							for(i=0; i<tiles.length; i=i+2){
+								tiles[i].material.color.set(floorColor);
+								tiles[i].material.needsUpdate = true;
+								}
+							for(i=1; i<tiles.length; i=i+2){
+								tiles[i].material.color.set(0xeeeeee);
+								tiles[i].material.needsUpdate = true;
+								}
+							tileSwitch = 'odd';
+						}
+						else if(tileSwitch == 'odd'){
+							for(i=1; i<tiles.length; i=i+2){
+								tiles[i].material.color.set(floorColor);
+								tiles[i].material.needsUpdate = true;
+								}
+							for(i=0; i<tiles.length; i=i+2){
+								tiles[i].material.color.set(0xeeeeee);
+								tiles[i].material.needsUpdate = true;
+								}
+							tileSwitch = 'even';
+							}
+						//loop through the bars and apply the new bar color
+						for(i=0;i<bars.length;i++){
+							bars[i].material.color.set(floorColor);
+							bars[i].material.needsUpdate = true;
+						}
+						
+						//loop through cones and apply new color
+						for(i=0;i<cones.length;i++){
+							cones[i].material.color.set(floorColor);
+							cones[i].material.needsUpdate = true;
+						}						
+						
+						holoScroller.material.color.set(floorColor);
+						holoScroller.material.needsUpdate = true;
+						
+						//lasers!
+						
+						leftLaser.material.color.set(floorColor);
+						leftLaser.material.needsUpdate = true;
+						
+						rightLaser.material.color.set(floorColor);
+						rightLaser.material.needsUpdate = true;
+						
+						bumping = true; //we are currently bumping
+						headBangCounter++; //just for fun
+						
+						//store the most recent subwoofer value, the previous function compares this value to the current sub value to see if there was a big bass hit
+						lastSub = sub;
+						
+						//reset the bpm counter
+						bpmCounter = 0;
+						
+						//just for fun
+						console.log("FIST PUMP! " + headBangCounter);
+						console.log("Floor color is " + floorColor);
+					}
+				}
+			}
+		TWEEN.update();
+		}
+		
+		animate();
+		
+		//and we're done!
+		
+		</script>
+	</body>
+</html>
